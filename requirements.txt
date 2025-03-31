@@ -1,0 +1,6 @@
+litellm[openai]==1.65.0
+openai==1.69.0
+psycopg[binary]==3.2.6
+numpy==2.2.4
+fastapi==0.115.12
+pgvector==0.4.0
