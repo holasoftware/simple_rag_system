@@ -1,6 +1,8 @@
 import itertools
 import os
 import logging
+import uuid
+import datetime
 
 
 import psycopg
@@ -10,7 +12,7 @@ from pgvector.psycopg import register_vector
 import numpy as np
 
 from .base import VectorDB
-from ..document import Document
+from ..document import DocumentChunk
 
 
 logger = logging.getLogger(__name__)
@@ -94,9 +96,10 @@ class PgVectorVectorDB(VectorDB):
                     """
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     id BIGSERIAL PRIMARY KEY,
+                    collection_uuid UUID,
                     content TEXT,
                     metadata JSONB,
-                    embedding vector({vector_dimension}),
+                    embedding_vector vector({vector_dimension}),
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             """
@@ -109,7 +112,7 @@ class PgVectorVectorDB(VectorDB):
                 sql.SQL(
                     """
                 CREATE INDEX IF NOT EXISTS {embedding_idx_name} 
-                ON {table_name} USING hnsw (embedding vector_cosine_ops)
+                ON {table_name} USING hnsw (embedding_vector vector_cosine_ops)
                 WITH (m = {m}, ef_construction = {ef_construction})
             """
                 ).format(
@@ -119,6 +122,7 @@ class PgVectorVectorDB(VectorDB):
                     ef_construction=sql.Literal(ef_construction),
                 )
             )
+            # Add unique constraint document_id and chunk_number ??
             self.conn.commit()
 
     def _verify_index(self):
@@ -127,7 +131,7 @@ class PgVectorVectorDB(VectorDB):
                 """
                 SELECT COUNT(*)
                 FROM pg_indexes
-                WHERE tablename = %s AND indexdef LIKE '%%USING hnsw%%embedding%%' AND indexname = %s AND schemaname = 'public'
+                WHERE tablename = %s AND indexdef LIKE '%% USING hnsw (embedding_vector vector_cosine_ops)%%' AND indexname = %s AND schemaname = 'public'
             """,
                 self.table_name,
                 self.table_name + "_embedding_idx",
@@ -135,23 +139,103 @@ class PgVectorVectorDB(VectorDB):
 
             return cur.fetchone()[0] == 1
 
-    def store_document(self, content, embedding, metadata=None):
-        logger.debug("Storing document: %s <%s>", content, embedding)
+    def _check_health(self) -> bool:
+        """Check database connectivity."""
+        with self.conn.cursor() as cur:
+            try:
+                cur.execute("SELECT 1")
+            except Exception as e:
+                return False
+            else:
+                return True
+
+    def delete_document_chunk_by_id(self, document_chunk_id: int):
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                DELETE FROM {table_name}
+                WHERE id = %s
+                """
+                ).format(table_name=self.table_name),
+                (document_chunk_id,),
+            )
+            conn.commit()
+
+            return cur.rowcount == 1
+
+    def delete_all_chunks_in_collection(self, collection_uuid: uuid.UUID):
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                DELETE FROM {table_name}
+                WHERE collection_uuid = %s
+                """
+                ).format(table_name=self.table_name),
+                (collection_uuid,),
+            )
+            conn.commit()
+
+            return cur.rowcount
+
+    def delete_document_chunks(self, **metadata_filter):
+        with conn.cursor() as cur:
+            if len(metadata_filter) == 0:
+                cur.execute(
+                    sql.SQL(
+                        """
+                    DELETE FROM {table_name}
+                    """
+                    ).format(table_name=self.table_name)
+                )
+            else:
+                cur.execute(
+                    sql.SQL(
+                        """
+                    DELETE FROM {table_name}
+                    WHERE metadata @> %s
+                    """
+                    ).format(table_name=self.table_name),
+                    (metadata_filter,),
+                )
+                conn.commit()
+
+            return cur.rowcount
+
+    def store_document_chunk(
+        self, collection_uuid, content, embedding_vector, metadata=None
+    ):
+        logger.debug("Storing document chunk: [%s] %s", collection_uuid, content)
 
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
-                    "INSERT INTO {} (content, metadata, embedding) VALUES (%s, %s, %s)"
+                    "INSERT INTO {} (collection_uuid, content, metadata, embedding_vector) VALUES (%s, %s, %s, %s) RETURNING id"
                 ).format(sql.Identifier(self.table_name)),
                 (
+                    collection_uuid,
                     content,
                     Json(metadata) if metadata is not None else None,
-                    np.array(embedding),
+                    np.array(embedding_vector),
                 ),
             )
+
             self.conn.commit()
 
-    def store_documents_in_batch(self, content_list, embedding_list, metadata_list):
+            document_chunk_id = cur.fetchone()[0]
+
+            return DocumentChunk(
+                id=document_chunk_id,
+                collection_uuid=collection_uuid,
+                content=content,
+                metadata=metadata,
+                created_at=datetime.datetime.now(),
+            )
+
+    def store_document_chunks_in_batch(
+        self, collection_uuid, content_list, embedding_list, metadata_list
+    ):
         with self.vector_db.conn.cursor() as cur:
             batch_size = min(len(content_list), len(embedding_list), len(metadata_list))
             metadata_list = [
@@ -159,7 +243,7 @@ class PgVectorVectorDB(VectorDB):
                 for metadata in metadata_list
             ]
 
-            values_template = sql.SQL("({}, {}, {})").format(
+            values_template = sql.SQL("({}, {}, {} {})").format(
                 sql.Placeholder(), sql.Placeholder(), sql.Placeholder()
             )
 
@@ -168,39 +252,52 @@ class PgVectorVectorDB(VectorDB):
             )
 
             query = sql.SQL(
-                "INSERT INTO {table_name} (content, embedding, metadata) VALUES {all_values}"
+                "INSERT INTO {table_name} (collection_uuid, content, embedding_vector, metadata) VALUES {all_values}"
             ).format(
                 table_name=sql.Identifier(self.table_name),
                 all_values=all_values_template,
             )
 
             # flatten parameters
-            params = list(
-                itertools.chain(*zip(content_list, embedding_list, metadata_list))
+            sql_params = list(
+                itertools.chain(
+                    *zip(
+                        [collection_uuid] * batch_size,
+                        content_list,
+                        embedding_list,
+                        metadata_list,
+                    )
+                )
             )
 
-            cur.execute(query, params)
+            cur.execute(query, sql_params)
             self.conn.commit()
 
-    def similarity_search(self, embedding, k=3, metadata_filter=None):
+    def similarity_search(self, embedding_vector, k=3, metadata_filter=None):
         with self.conn.cursor() as cur:
             if metadata_filter:
                 cur.execute(
                     sql.SQL(
-                        "SELECT id, content, metadata, created_at FROM {table_name} WHERE metadata @> %s ORDER BY embedding <=> %s LIMIT %s"
+                        "SELECT id, collection_uuid, content, metadata, created_at FROM {table_name} WHERE metadata @> %s ORDER BY embedding_vector <=> %s LIMIT %s"
                     ).format(table_name=sql.Identifier(self.table_name)),
-                    (metadata_filter, np.array(embedding), k),
+                    (metadata_filter, np.array(embedding_vector), k),
                 )
             else:
                 cur.execute(
                     sql.SQL(
-                        "SELECT id, content, metadata, created_at FROM {table_name} ORDER BY embedding <=> %s LIMIT %s"
+                        "SELECT id, collection_uuid, content, metadata, created_at FROM {table_name} ORDER BY embedding_vector <=> %s LIMIT %s"
                     ).format(table_name=sql.Identifier(self.table_name)),
-                    (np.array(embedding), k),
+                    (np.array(embedding_vector), k),
                 )
 
             result = [
-                Document(id=row[0], content=row[1], metadata=row[2], created_at=row[3])
+                DocumentChunk(
+                    id=row[0],
+                    collection_uuid=row[1],
+                    content=row[2],
+                    metadata=row[3],
+                    created_at=row[4],
+                )
                 for row in cur.fetchall()
             ]
             return result

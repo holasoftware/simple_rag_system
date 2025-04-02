@@ -14,7 +14,7 @@ class LiteLlmRAGSystem(RAGSystem):
 
         super().__init__(**kwargs)
 
-    def get_batch_embeddings(self, texts):
+    def get_batch_embedding_vectors(self, texts):
         response = litellm.embedding(
             model=self.embedding_model, api_key=self.api_key, input=texts
         )

@@ -85,7 +85,9 @@ print(f"Question: {question}")
 print(f"Answer: {answer_data['answer']}")
 
 
-print("Extracted documents extracted for the context of the chat completion ordered by semantic similarity:")
+print(
+    "Extracted documents extracted for the context of the chat completion ordered by semantic similarity:"
+)
 for relevant_document in answer_data["relevant_docs"]:
     print(f"- {relevant_document.metadata['document_id']}")
 
