@@ -23,7 +23,7 @@ Pull the official docker image of `pgvector`:
     docker pull ankane/pgvector
 ```
 
-Export these environment variables for configuring the pgvector docker container:
+Export these environment variables for configuring the pgvector docker container and the exposed port. For example:
 ```
     export POSTGRES_USER='postgres'
     export POSTGRES_PASSWORD='postgres'
@@ -31,18 +31,25 @@ Export these environment variables for configuring the pgvector docker container
     export POSTGRES_PORT=5432
 ```
 
-Internally the class `rag.vector_store.pgvector_vectorstore.PgVectorVectorDB` is using the same environment variables by default in the method `initialize_from_env_variables`.
+Internally in the class `rag.vector_store.pgvector_vectorstore.PgVectorVectorDB`, the class method `initialize_from_env_variables` is using the previous environment variables for initializing the class and returning an instance.
 
 
-Run a docker container:
+Run a docker container of `ankane/pgvector` in the backgound configured with the environment variables:
 ```
-    docker run --name pgvector-db -p $POSTGRES_PORT:$POSTGRES_PORT ankane/pgvector
+    docker run -d --name pgvector-db -p $POSTGRES_PORT:5432 -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB -e POSTGRES_PORT ankane/pgvector
 ```
 
-Create database and install `pgvector` extension:
+Install `pgvector` extension in the database `$POSTGRES_DB`:
 ```
-    docker exec -it pgvector-db psql -U postgres -d test
+    docker exec -it pgvector-db psql -U $POSTGRES_USER -d $POSTGRES_DB
     test=# CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Installing the extension requires superuser privilegies.
+
+Check that the extension is installed:
+```
+    SELECT vector '[1,2,3]'::vector;
 ```
 
 For running the demo, configure the environment variable for your Openai API key `LLM_API_KEY`. 
@@ -57,5 +64,5 @@ Run the demo:
 
 There is also a demo server:
 ```
-    python demo_with_server.py
+    uvicorn demo_with_server:app
 ```

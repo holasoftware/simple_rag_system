@@ -4,3 +4,5 @@ psycopg[binary]==3.2.6
 numpy==2.2.4
 fastapi==0.115.12
 pgvector==0.4.0
+uvicorn==0.34.0
+# Optional for local embeddings: sentence-transformers
