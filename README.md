@@ -57,12 +57,41 @@ For running the demo, configure the environment variable for your Openai API key
     export LLM_API_KEY=<Openai API key>
 ```
 
-Run the demo:
+## Usage
+```
+from rag.litellm_rag import LiteLlmRAGSystem
+from rag.vector_store.pgvector_vectorstore import PgVectorVectorDB
+
+rag = LiteLlmRAGSystem(
+    embedding_model=EMBEDDING_MODEL,
+    llm_model=LLM_MODEL,
+    api_key=API_KEY,
+    vector_store=PgVectorVectorDB.initialize_from_env_variables(
+        vector_dimension=EMBEDDING_MODEL_VECTOR_DIMENSION
+    ),
+)
+
+rag.add_document(
+    "Document text...",
+    {"metadata_key1": value1, "metadata_key2": value2, ...},
+)
+
+answer = rag.query("Your question...")
+```
+
+## Demo
+Run the script:
 ```
     python demo.py
 ```
 
-There is also a demo server:
+For the demo server install these dependencies:
+```
+    pip install fastapi
+    pip install uvicorn
+```
+
+And then run:
 ```
     uvicorn demo_with_server:app
 ```
